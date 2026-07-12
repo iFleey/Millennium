@@ -43,20 +43,41 @@ YES=0
 log() { printf "%b\n" "$1"; }
 warn() { printf "\033[1;33m%b\033[0m\n" "$1"; }
 is_root() { [ "$(id -u)" -eq 0 ]; }
+
+# verify a "<sha256>  <file>" line against files in dir.
+# linux has sha256sum, macos only ships shasum.
+verify_checksum() {
+    local dir="$1" digest="$2"
+    if command -v sha256sum >/dev/null; then
+        (cd "${dir}" && echo "${digest}" | sha256sum -c --status)
+    else
+        (cd "${dir}" && echo "${digest}" | shasum -a 256 -c --status)
+    fi
+}
+
 format_size() {
     echo "$1" | awk '{ split("B KB MB GB TB PB", v); s=1; while ($1 > 1024) { $1 /= 1024; s++ } printf "%.2f %s\n", $1, v[s] }'
 }
 
 verify_platform() {
     case $(uname -sm) in
-        "Linux x86_64") echo "linux-x86_64" ;;
-        *) log "Unsupported platform $(uname -sm). x86_64 is the only available platform."; exit 1 ;;
+        "Linux x86_64")  echo "linux-x86_64" ;;
+        "Darwin arm64")  echo "darwin-arm64" ;;
+        "Darwin x86_64")
+            log "Intel Macs (Darwin x86_64) are not supported yet: the macOS build is arm64-only and x86_64 is currently untested."
+            exit 1
+            ;;
+        *) log "Unsupported platform $(uname -sm)."; exit 1 ;;
     esac
 }
 
 check_dependencies() {
     log "resolving dependencies..."
-    local deps=(curl tar jq sudo)
+    local deps
+    case "$(uname -s)" in
+        Darwin) deps=(curl tar jq) ;;
+        *)      deps=(curl tar jq sudo) ;;
+    esac
     [ -n "${RUN_ID}" ] && deps+=(unzip)
     for cmd in "${deps[@]}"; do
         command -v "${cmd}" >/dev/null || {
@@ -164,6 +185,19 @@ extract_package() {
 install_millennium() {
     local extract_path="$1"
 
+    if [ "$(uname -s)" = "Darwin" ]; then
+        # macOS is a self-contained bundle; let install_macos.sh do the work
+        # (wrapper app + per-user runtime, no system paths touched).
+        local mac_installer="${extract_path}/install_macos.sh"
+        [ -f "${mac_installer}" ] || { log "Bundled install_macos.sh missing from ${extract_path}"; exit 1; }
+        if [ "${DRY_RUN}" -eq 1 ]; then
+            MILLENNIUM_BUNDLE_VERSION="v${tag:-0.0.0}" bash "${mac_installer}" --from-bundle "${extract_path}" --dry-run
+        else
+            MILLENNIUM_BUNDLE_VERSION="v${tag:-0.0.0}" bash "${mac_installer}" --from-bundle "${extract_path}"
+        fi
+        return
+    fi
+
     if [ "${DRY_RUN}" -eq 0 ]; then
         sudo cp -r "${extract_path}"/* / || true
     else
@@ -254,7 +288,7 @@ main() {
         sha256digest=$(curl -sL "${sha256_uri}")
         installed_size=$(format_size "$(curl -sL "${install_size_uri}")")
 
-        log "\nPackages (1) millennium@${tag}-x86_64\n"
+        log "\nPackages (1) millennium@${tag}-${target#*-}\n"
         log "Total Download Size:  $(printf "%10s\n" "${size}")"
         log "Total Installed Size: $(printf "%10s\n" "${installed_size}")"
 
@@ -266,7 +300,7 @@ main() {
         log "(1/4) Downloading millennium-v${tag}-${target}.tar.gz..."
         download_package "${download_uri}" "${tar_file}"
         log "(2/4) Verifying checksums..."
-        if (cd "${install_dir}" && echo "${sha256digest}" | sha256sum -c --status); then
+        if verify_checksum "${install_dir}" "${sha256digest}"; then
             echo -ne "\033[1A"
             log "(2/4) Verifying checksums... OK"
         else
@@ -276,6 +310,13 @@ main() {
         extract_package "${tar_file}" "${extract_path}"
         log "(4/4) Installing millennium..."
         install_millennium "${extract_path}"
+    fi
+
+    if [ "$(uname -s)" = "Darwin" ]; then
+        cleanup "${install_dir}"
+        log "done.\n"
+        log "Launch Steam via the 'Steam Millennium' app (open '/Applications/Steam Millennium.app')."
+        return 0
     fi
 
     log ":: Running post-install scripts..."
