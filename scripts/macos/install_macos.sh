@@ -28,8 +28,10 @@ readonly WRAPPER_RUNTIME_ARTIFACTS=(
     "libmillennium_child_hook.dylib"
 )
 readonly WRAPPER_ASSET_RELATIVE_DIR="millennium-assets"
-readonly APP_INFO_TEMPLATE="${REPO_ROOT}/src/bootstrap/macos/Info.plist.xml"
-readonly APP_ICON_SOURCE="${REPO_ROOT}/src/bootstrap/macos/AppIcon.icns"
+APP_INFO_TEMPLATE="${REPO_ROOT}/src/bootstrap/macos/Info.plist.xml"
+APP_ICON_SOURCE="${REPO_ROOT}/src/bootstrap/macos/AppIcon.icns"
+ASSET_LOADER_DIR="${REPO_ROOT}/src/typescript/sdk/build"
+ASSET_FRONTEND_FILE="${REPO_ROOT}/src/typescript/.frontend.bin"
 readonly DEFAULT_APP_BUNDLE_GLOBAL="/Applications/${WRAPPER_APP_NAME}"
 readonly DEFAULT_APP_BUNDLE_USER="${HOME}/Applications/${WRAPPER_APP_NAME}"
 readonly DEFAULT_RUNTIME_INSTALL_ROOT="${HOME}/Library/Application Support/Millennium/runtime"
@@ -55,6 +57,7 @@ CONFIGURE_STEAM_CFG_INHIBIT_ALL=0
 RUNTIME_SEARCH_DIRS=()
 SKIP_STEAM_CFG_INHIBIT_ALL=0
 INSTALL_VARIANT="wrapper-app"
+BUNDLE_DIR=""
 
 log() { printf "%b\n" "$1"; }
 
@@ -78,6 +81,7 @@ Modes:
   --status                      Print current install state
   --uninstall                   Remove wrapper app/runtime payload
   --wrapper-app                 Force wrapper-app install flow (default)
+  --from-bundle <dir>           Install from an extracted release bundle instead of the repo tree
   --tier0-legacy                Use legacy tier0 proxy install flow (modifies Steam bundle)
   --restore-steam-cfg           Tier0-only: restore Steam.cfg to pre-managed state
 
@@ -194,7 +198,11 @@ remove_path_recursive() {
 
 resolve_install_version() {
     local version
-    version=$(git -C "${REPO_ROOT}" describe --tags --always --dirty 2>/dev/null || true)
+    if [ -n "${MILLENNIUM_BUNDLE_VERSION:-}" ]; then
+        version="${MILLENNIUM_BUNDLE_VERSION}"
+    else
+        version=$(git -C "${REPO_ROOT}" describe --tags --always --dirty 2>/dev/null || true)
+    fi
     if [ -z "${version}" ]; then
         version=$(git -C "${REPO_ROOT}" rev-parse --short HEAD 2>/dev/null || true)
     fi
@@ -213,10 +221,10 @@ copy_wrapper_assets_into_runtime() {
     local loader_target_dir="${asset_root}/loader"
     local chunks_target_dir="${loader_target_dir}/chunks"
 
-    local loader_build_dir="${REPO_ROOT}/src/typescript/sdk/build"
+    local loader_build_dir="${ASSET_LOADER_DIR}"
     local loader_entry="${loader_build_dir}/millennium.js"
     local chunks_source_dir="${loader_build_dir}/chunks"
-    local frontend_source="${REPO_ROOT}/src/typescript/.frontend.bin"
+    local frontend_source="${ASSET_FRONTEND_FILE}"
 
     [ -f "${loader_entry}" ] || fail "Missing loader entry asset: ${loader_entry}"
     [ -d "${chunks_source_dir}" ] || fail "Missing loader chunks directory: ${chunks_source_dir}"
@@ -508,6 +516,26 @@ restore_steam_cfg_state() {
     run_cmd rm -f "${steam_cfg_state}"
 }
 
+# read assets from an extracted release bundle instead of the repo tree, so a
+# curl|bash install (no checkout) goes through the same wrapper-app path as a
+# dev-tree install. CI lays the bundle out as:
+#   binaries/   steam_osx + libmillennium*.dylib
+#   assets/loader/{millennium.js,chunks/}  +  assets/.frontend.bin
+#   app/        Info.plist.xml + AppIcon.icns
+apply_bundle_mode() {
+    [ -n "${BUNDLE_DIR}" ] || return 0
+
+    [ -d "${BUNDLE_DIR}" ] || fail "Bundle directory not found: ${BUNDLE_DIR}"
+    BUNDLE_DIR="$(cd "${BUNDLE_DIR}" && pwd)"
+
+    WRAPPER_BUILD_DIR="${BUNDLE_DIR}/binaries"
+    RUNTIME_BUILD_DIR="${BUNDLE_DIR}/binaries"
+    ASSET_LOADER_DIR="${BUNDLE_DIR}/assets/loader"
+    ASSET_FRONTEND_FILE="${BUNDLE_DIR}/assets/.frontend.bin"
+    APP_INFO_TEMPLATE="${BUNDLE_DIR}/app/Info.plist.xml"
+    APP_ICON_SOURCE="${BUNDLE_DIR}/app/AppIcon.icns"
+}
+
 build_runtime_search_dirs() {
     RUNTIME_SEARCH_DIRS=()
     if [ -n "${LEGACY_BUILD_DIR}" ]; then
@@ -788,6 +816,12 @@ while [ $# -gt 0 ]; do
             INSTALL_VARIANT="wrapper-app"
             shift
             ;;
+        --from-bundle)
+            [ $# -ge 2 ] || fail "Missing value for --from-bundle"
+            BUNDLE_DIR="$2"
+            INSTALL_VARIANT="wrapper-app"
+            shift 2
+            ;;
         --repair)
             MODE="repair"
             shift
@@ -827,6 +861,12 @@ while [ $# -gt 0 ]; do
             ;;
     esac
 done
+
+apply_bundle_mode
+
+if [ -n "${BUNDLE_DIR}" ] && [ "${INSTALL_VARIANT}" != "wrapper-app" ]; then
+    fail "--from-bundle only supports the wrapper-app install flow."
+fi
 
 if [ -z "${APP_BUNDLE_PATH}" ]; then
     APP_BUNDLE_PATH=$(resolve_preferred_app_bundle_path)
