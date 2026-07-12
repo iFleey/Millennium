@@ -218,6 +218,78 @@ jobs:
           name: millennium-linux
           path: ~/build/
 
+  build-macos:
+    needs: prepare
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+
+    # arm64-only build, so pin the runner. macos-latest has flipped arch before,
+    # and the -intel images are the wrong target for us.
+    # https://docs.github.com/en/actions/how-tos/write-workflows/choose-where-workflows-run/choose-the-runner-for-a-job
+    runs-on: macos-14
+
+    # don't let a new, still-settling macOS build block the win/linux release.
+    # continue-on-error reports success to `release`, which skips the artifact
+    # if it's missing. drop this once macOS has been green for a while.
+    # https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/use-jobs
+    continue-on-error: true
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Update Millennium Version
+        if: ${{ needs.prepare.outputs.version != '' }}
+        run: |
+          echo "# current version of millennium" > ./scripts/version
+          echo "v${{ needs.prepare.outputs.version }}" >> ./scripts/version
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install Dependencies
+        run: brew install llvm ninja
+
+      - name: Build Millennium Backend
+        run: |
+          # apple clang lacks the c++23 bits we use (<print>); build with homebrew llvm
+          export CC="$(brew --prefix llvm)/bin/clang"
+          export CXX="$(brew --prefix llvm)/bin/clang++"
+
+          cmake --preset=osx-release -DGITHUB_ACTION_BUILD=ON -DMILLENNIUM_RUN_TESTS_ON_BUILD=OFF
+          cmake --build build/osx-release --config Release -- -j$(sysctl -n hw.ncpu)
+
+      - name: Assemble Release Bundle
+        run: |
+          # layout that install_macos.sh --from-bundle reads
+          bundle=~/build/bundle
+          mkdir -p "$bundle/binaries" "$bundle/assets/loader/chunks" "$bundle/app"
+
+          for lib in steam_osx libmillennium.dylib libmillennium_hhx64.dylib \
+                     libmillennium_bootstrap.dylib libmillennium_child_hook.dylib; do
+            cp "build/osx-release/$lib" "$bundle/binaries/"
+          done
+
+          cp src/typescript/sdk/build/millennium.js "$bundle/assets/loader/"
+          cp src/typescript/sdk/build/chunks/chunk-*.js "$bundle/assets/loader/chunks/"
+          cp src/typescript/.frontend.bin "$bundle/assets/.frontend.bin"
+
+          cp src/bootstrap/macos/Info.plist.xml src/bootstrap/macos/AppIcon.icns "$bundle/app/"
+          cp scripts/macos/install_macos.sh "$bundle/"
+
+      - name: Upload Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          include-hidden-files: true
+          name: millennium-macos
+          path: ~/build/bundle/
+
   test-pkgbuild:
     needs: prepare
     runs-on: ubuntu-latest
@@ -306,7 +378,7 @@ jobs:
           [ $ARCH_FAIL -eq 0 ] || { echo "ERROR: binary architecture mismatch"; exit 1; }
 
   release:
-    needs: [prepare, build-windows, build-linux, test-pkgbuild]
+    needs: [prepare, build-windows, build-linux, build-macos, test-pkgbuild]
     runs-on: ubuntu-latest
     if: ${{ inputs.release_artifacts == true }}
     steps:
@@ -338,6 +410,14 @@ jobs:
           name: millennium-linux
           path: ./artifacts/linux
 
+      - name: Download macOS Build
+        uses: actions/download-artifact@v4
+        # macOS build is non-blocking; fine if there's no artifact
+        continue-on-error: true
+        with:
+          name: millennium-macos
+          path: ./artifacts/macos
+
       - name: Download PDB Symbols
         uses: actions/download-artifact@v4
         with:
@@ -367,6 +447,17 @@ jobs:
           sha256sum ${linux_release_name}.tar.gz > ${linux_release_name}.sha256
           sed -i 's#\./artifacts/release/##g' ${linux_release_name}.sha256
           du -sb ./artifacts/linux | awk '{print $1}' > ${linux_release_name}.installsize
+
+          # only if the macOS build actually produced something
+          if [ -d ./artifacts/macos ] && [ -n "$(ls -A ./artifacts/macos 2>/dev/null)" ]; then
+            macos_release_name="./artifacts/release/millennium-v${{ needs.prepare.outputs.version }}-darwin-arm64"
+            tar -czvf ${macos_release_name}.tar.gz -C ./artifacts/macos .
+            sha256sum ${macos_release_name}.tar.gz > ${macos_release_name}.sha256
+            sed -i 's#\./artifacts/release/##g' ${macos_release_name}.sha256
+            du -sb ./artifacts/macos | awk '{print $1}' > ${macos_release_name}.installsize
+          else
+            echo "no macOS artifact, skipping its packaging"
+          fi
 
           pdb_name="millennium-v${{ needs.prepare.outputs.version }}-pdb"
           pdb_release_name="./artifacts/release/${pdb_name}"
