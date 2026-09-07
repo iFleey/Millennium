@@ -40,9 +40,24 @@
 ffi_binder::ffi_binder(std::shared_ptr<cdp_client> client, std::shared_ptr<plugin_manager> plugin_manager, std::shared_ptr<ipc_main> ipc_main)
     : m_client(client), m_plugin_manager(std::move(plugin_manager)), m_ipc_main(std::move(ipc_main))
 {
-    m_internal_tokens.push_back(m_client->on("Runtime.bindingCalled", std::bind(&ffi_binder::binding_call_hdlr, this, std::placeholders::_1)));
-    m_internal_tokens.push_back(m_client->on("Runtime.executionContextCreated", std::bind(&ffi_binder::execution_ctx_created_hdlr, this, std::placeholders::_1)));
-    m_internal_tokens.push_back(m_client->on("Runtime.executionContextDestroyed", std::bind(&ffi_binder::execution_ctx_destroyed_hdlr, this, std::placeholders::_1)));
+}
+
+void ffi_binder::init()
+{
+    std::weak_ptr<ffi_binder> weak_self = weak_from_this();
+
+    m_internal_tokens.push_back(m_client->on("Runtime.bindingCalled", [weak_self](const json& params)
+    {
+        if (auto self = weak_self.lock()) self->binding_call_hdlr(params);
+    }));
+    m_internal_tokens.push_back(m_client->on("Runtime.executionContextCreated", [weak_self](const json& params)
+    {
+        if (auto self = weak_self.lock()) self->execution_ctx_created_hdlr(params);
+    }));
+    m_internal_tokens.push_back(m_client->on("Runtime.executionContextDestroyed", [weak_self](const json& params)
+    {
+        if (auto self = weak_self.lock()) self->execution_ctx_destroyed_hdlr(params);
+    }));
 }
 
 ffi_binder::~ffi_binder()
@@ -263,9 +278,10 @@ void ffi_binder::cdp_proxy_hdlr(const json& params)
             plugin_ctx_ref.main_session_id = session_id;
 
             if (first) {
-                int token = m_client->on(event, [this, event](const json& event_params)
+                std::weak_ptr<ffi_binder> weak_self = weak_from_this();
+                int token = m_client->on(event, [weak_self, event](const json& event_params)
                 {
-                    cdp_event_dispatch(event, event_params);
+                    if (auto self = weak_self.lock()) self->cdp_event_dispatch(event, event_params);
                 });
                 m_event_sub_tokens[event] = token;
             }
@@ -455,8 +471,13 @@ void ffi_binder::binding_call_hdlr(const json& params)
         {
             const int msg_id = payload.value("id", -1);
             const double dur = std::chrono::duration<double, std::milli>(t1 - t0).count();
-            std::string plugin = payload.value("data", json::object()).value("pluginName", std::string{});
-            std::string method = payload.value("data", json::object()).value("methodName", std::string{});
+            const auto data_field = payload.value("data", json::object());
+            std::string plugin = data_field.value("pluginName", std::string{});
+            std::string method;
+            if (data_field.contains("methodName")) {
+                const auto& method_field = data_field["methodName"];
+                method = method_field.is_string() ? method_field.get<std::string>() : method_field.dump();
+            }
 
             if (!plugin.empty() && msg_id != ipc_main::ipc_method::FRONT_END_LOADED) {
                 mep::ffi_recorder::instance().record({ plugin, method, "fe_to_be", payload.value("data", json::object()).dump(), result.dump(), dur,
