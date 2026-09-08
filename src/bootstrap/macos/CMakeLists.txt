@@ -39,7 +39,7 @@ set_target_properties(macos-child-hook PROPERTIES
     SUFFIX ""
     # Injected into every process Steam spawns, including arm64e Apple system
     # binaries; dyld needs a matching slice or those processes abort on launch.
-    OSX_ARCHITECTURES "arm64;arm64e"
+    OSX_ARCHITECTURES "arm64;arm64e;x86_64"
 )
 
 add_executable(SteamWrapper steam_launcher.cc)

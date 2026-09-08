@@ -9,12 +9,10 @@
 #include <limits.h>
 #include <mach-o/dyld.h>
 #include <fcntl.h>
-#include <netinet/in.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string>
 #include <string.h>
-#include <sys/socket.h>
 #include <unistd.h>
 #include <vector>
 
@@ -183,39 +181,6 @@ static bool resolve_steam_target(const char* wrapper_directory, char* output, si
     return resolve_existing_path(default_runtime_path, output, output_size, X_OK);
 }
 
-static std::string reserve_debug_port()
-{
-    const int sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (sock < 0) {
-        return {};
-    }
-
-    sockaddr_in address = {};
-    address.sin_family = AF_INET;
-    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    address.sin_port = 0;
-
-    if (bind(sock, reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0) {
-        close(sock);
-        return {};
-    }
-
-    socklen_t address_length = sizeof(address);
-    if (getsockname(sock, reinterpret_cast<sockaddr*>(&address), &address_length) != 0) {
-        close(sock);
-        return {};
-    }
-
-    const auto port = ntohs(address.sin_port);
-    close(sock);
-
-    if (port == 0) {
-        return {};
-    }
-
-    return std::to_string(port);
-}
-
 static void configure_debug_environment(int argc, char** argv)
 {
     const bool is_dev_mode = has_argument(argc, argv, "-dev");
@@ -232,16 +197,7 @@ static void configure_debug_environment(int argc, char** argv)
 
     if (is_dev_mode) {
         setenv(kDebugPortEnv, kDefaultDebugPort, 1);
-        return;
     }
-
-    const std::string reserved_port = reserve_debug_port();
-    if (!reserved_port.empty()) {
-        setenv(kDebugPortEnv, reserved_port.c_str(), 1);
-        return;
-    }
-
-    setenv(kDebugPortEnv, kDefaultDebugPort, 1);
 }
 
 static bool ensure_cef_remote_debugging_marker(const char* steam_executable_path)
@@ -597,7 +553,7 @@ int main(int argc, char** argv)
 
     configure_debug_environment(argc, argv);
 
-    if (!ensure_cef_remote_debugging_marker(target_steam_path)) {
+    if (getenv(kDebugPortEnv) && !ensure_cef_remote_debugging_marker(target_steam_path)) {
         fprintf(stderr, "[Millennium] Failed to create %s beside the Steam runtime.\n", kCefRemoteDebuggingMarker);
         return 1;
     }

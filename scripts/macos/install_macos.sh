@@ -614,6 +614,9 @@ compile_tier0_proxy() {
         -fvisibility=hidden \
         -arch arm64 \
         -arch x86_64 \
+        '-D__MILLENNIUM_OUTPUT_NAME__="libmillennium.dylib"' \
+        '-D__MILLENNIUM_HOOK_HELPER_OUTPUT_NAME__="libmillennium_hhx64.dylib"' \
+        '-D__MILLENNIUM_CHILD_HOOK_OUTPUT_NAME__="libmillennium_child_hook.dylib"' \
         -Wl,-install_name,@loader_path/${TIER0_NAME}.proxy \
         -Wl,-reexport_library,"${backup_tier0}" \
         "${PROXY_SOURCE}" \

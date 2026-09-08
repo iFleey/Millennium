@@ -11,6 +11,7 @@
 
 #include <string>
 #include <vector>
+#include "pipe_bootstrap.h"
 
 typedef int (*start_millennium_t)(void);
 typedef int (*stop_millennium_t)(void);
@@ -377,6 +378,11 @@ static int call_execve_syscall(const char* path, char* const argv[], char* const
 
 static int millennium_execve(const char* path, char* const argv[], char* const envp[])
 {
+    // The inherited environment already contains the child hook. Both exec
+    // entry points can use it without allocating in the browser's fork child.
+    if (g_bootstrap_enabled && (envp == environ || !envp) && getpid() != millennium_pipe_bootstrap::owner && millennium_pipe_bootstrap::is_browser(path, argv)) {
+        return millennium_pipe_bootstrap::exec(path, argv, environ, call_execve_syscall);
+    }
     append_exec_trace("exec-enter", path, argv, "");
 
     if (!g_bootstrap_enabled) {
@@ -397,10 +403,17 @@ static int millennium_execve(const char* path, char* const argv[], char* const e
 
     const char* trace_stage = plan.includesBootstrap || plan.includesChildHook ? "exec-pass-through" : "exec-missing-injection";
     append_exec_trace(trace_stage, path, argv, describe_injection_plan(plan));
-    return call_execve_syscall(path, argv, exec_environment.data());
+    return millennium_pipe_bootstrap::exec(path, argv, exec_environment.data(), call_execve_syscall);
 }
 
 DYLD_INTERPOSE(millennium_execve, execve);
+
+static int millennium_execv(const char* path, char* const argv[])
+{
+    return millennium_execve(path, argv, environ);
+}
+
+DYLD_INTERPOSE(millennium_execv, execv);
 
 __attribute__((constructor)) static void bootstrap_init()
 {
@@ -432,10 +445,11 @@ __attribute__((constructor)) static void bootstrap_init()
         return;
     }
 
-    if (start_millennium() < 0) {
+    if (!millennium_pipe_bootstrap::initialize(g_millennium_handle) || start_millennium() < 0) {
         fprintf(stderr, "[Millennium] Failed to start runtime.\n");
         dlclose(g_millennium_handle);
         g_millennium_handle = nullptr;
+        millennium_pipe_bootstrap::shutdown();
     }
 }
 
@@ -454,5 +468,6 @@ __attribute__((destructor)) static void bootstrap_cleanup()
     g_millennium_handle = nullptr;
 
     g_bootstrap_enabled = false;
+    millennium_pipe_bootstrap::shutdown();
 }
 #endif
