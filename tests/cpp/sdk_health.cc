@@ -40,7 +40,6 @@
 #include <unistd.h>
 
 #include <chrono>
-#include <algorithm>
 #include <deque>
 #include <cstring>
 #include <filesystem>
@@ -350,9 +349,16 @@ int main(int argc, char* argv[])
     }
     const std::string exc_sub_id = (*exc_resp)["result"]["subscription_id"].get<std::string>();
 
-    auto ready_resp = mep_request(sock_fd, "sdk.ready", nullptr, race_deadline);
+    const json ready_params = fresh ? json{ { "replay", false } } : json(nullptr);
+    auto ready_resp = mep_request(sock_fd, "sdk.ready", ready_params, race_deadline);
     if (!ready_resp || !(*ready_resp)["error"].is_null()) {
         std::println(stderr, "FAIL: sdk.ready subscribe error");
+        cleanup();
+        return 1;
+    }
+
+    if (fresh && (*ready_resp)["result"].value("replay", true)) {
+        std::println(stderr, "FAIL: runtime does not support sdk.ready without replay");
         cleanup();
         return 1;
     }
@@ -371,13 +377,6 @@ int main(int argc, char* argv[])
     if (!fresh && !(*ready_resp)["result"]["ready"].is_null()) return on_sdk_ready((*ready_resp)["result"]["ready"]);
 
     const std::string ready_sub_id = (*ready_resp)["result"]["subscription_id"].get<std::string>();
-    if (fresh) {
-        // sdk.ready replays its cached event before the subscription response.
-        std::erase_if(pending_events, [&](const json& event)
-        {
-            return event.value("subscription_id", "") == ready_sub_id;
-        });
-    }
     std::println("subscribed exceptions={}#ready={}. waiting ...", exc_sub_id, ready_sub_id);
     std::fflush(stdout);
 

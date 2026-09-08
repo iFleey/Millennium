@@ -1,8 +1,10 @@
 set(TEST_SOURCES
   ffi_recorder_test.cc
   test_target_url.cc
+  test_sdk_ready.cc
   ${CMAKE_SOURCE_DIR}/src/mep/ffi_recorder.cc
   ${CMAKE_SOURCE_DIR}/src/engine/target_url.cc
+  ${CMAKE_SOURCE_DIR}/src/mep/sdk_ready_bus.cc
 )
 
 add_executable(millennium_cpp_tests ${TEST_SOURCES})
