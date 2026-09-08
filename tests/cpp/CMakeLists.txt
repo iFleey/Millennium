@@ -18,6 +18,15 @@ target_link_libraries(millennium_cpp_tests PRIVATE Catch2::Catch2WithMain libcur
 include(Catch)
 catch_discover_tests(millennium_cpp_tests)
 
+if(UNIX AND MILLENNIUM_BUILD_MAIN)
+  add_executable(millennium_cdp_tests test_cdp_shutdown.cc)
+  target_compile_features(millennium_cdp_tests PRIVATE cxx_std_23)
+  target_include_directories(millennium_cdp_tests PRIVATE ${CMAKE_SOURCE_DIR}/src/include)
+  target_link_libraries(millennium_cdp_tests PRIVATE Millennium Catch2::Catch2WithMain nlohmann_json::nlohmann_json)
+  add_test(NAME millennium_cdp_tests COMMAND millennium_cdp_tests)
+  set_tests_properties(millennium_cdp_tests PROPERTIES TIMEOUT 15)
+endif()
+
 add_executable(sdk_health sdk_health.cc)
 target_compile_features(sdk_health PRIVATE cxx_std_17)
 target_link_libraries(sdk_health PRIVATE nlohmann_json::nlohmann_json)
