@@ -45,5 +45,5 @@ if(APPLE AND MILLENNIUM_BUILD_MAIN)
 endif()
 
 add_executable(sdk_health sdk_health.cc)
-target_compile_features(sdk_health PRIVATE cxx_std_17)
+target_compile_features(sdk_health PRIVATE cxx_std_23)
 target_link_libraries(sdk_health PRIVATE nlohmann_json::nlohmann_json)

@@ -28,7 +28,7 @@
  * SOFTWARE.
  */
 
-#ifdef __linux__
+#if defined(__linux__) || defined(__APPLE__)
 #include <fcntl.h>
 #include <nlohmann/json.hpp>
 #include <poll.h>
@@ -122,6 +122,7 @@ static std::optional<json> mep_request(int fd, const std::string& method, const 
     return recv_frame(fd, deadline);
 }
 
+#ifdef __linux__
 static void kill_existing_steam()
 {
     if (system("pkill -x steam > /dev/null 2>&1") == 0) {
@@ -182,6 +183,7 @@ static pid_t launch_steam()
     std::thread(stream_prefixed, pipefd[0], "[steam] ").detach();
     return pid;
 }
+#endif
 
 static bool wait_for_socket(const std::string& path, int timeout_secs)
 {
@@ -240,6 +242,13 @@ int main(int argc, char* argv[])
     pid_t steam_pid = -1;
     int sock_fd = -1;
 
+#ifdef __APPLE__
+    if (!no_launch) {
+        std::println(stderr, "On macOS, launch the test Steam session separately and use --no-launch.");
+        return 1;
+    }
+#endif
+
     auto cleanup = [&]()
     {
         if (sock_fd >= 0) {
@@ -262,7 +271,9 @@ int main(int argc, char* argv[])
                 steam_pid = -1;
             }
         }
-        kill_existing_steam();
+#ifdef __linux__
+        if (!no_launch) kill_existing_steam();
+#endif
     };
 
     signal(SIGTERM, [](int)
@@ -270,11 +281,14 @@ int main(int argc, char* argv[])
         exit(1);
     });
 
+#ifdef __linux__
     if (!no_launch) {
         kill_existing_steam();
         unlink(mep_socket.c_str());
         steam_pid = launch_steam();
+        if (steam_pid < 0) return 1;
     }
+#endif
 
     std::print("waiting to connect to MEP...");
     if (!wait_for_socket(mep_socket, 30)) {
@@ -377,13 +391,6 @@ int main(int argc, char* argv[])
 int main(int argc, char* argv[])
 {
     std::println("Windows not implemented!");
-    return 0;
-}
-#elif __APPLE__
-#include <print>
-int main(int argc, char* argv[])
-{
-    std::println("macOS not implemented!");
     return 0;
 }
 #endif
